@@ -130,5 +130,10 @@ class ChatPanel:
             html_lines = [self._format_line(line) for line in self.lines]
         return HTML("\n".join(html_lines))
 
+    @classmethod
+    def format_messages(cls, text: str) -> HTML:
+        """Format completed transcript text for terminal output."""
+        return HTML("\n".join(cls._format_line(line) for line in text.split("\n")))
+
 
 chat_panel = ChatPanel()

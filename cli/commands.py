@@ -7,8 +7,10 @@ import sys
 import threading
 from pathlib import Path
 
+from cli.confirmations import request_confirmation
 from cli.events import emit
 from core.commands import Command, get_all, register
+from parser.formats import is_supported
 from prompt_toolkit.utils import get_cwidth
 
 
@@ -40,6 +42,24 @@ def _load_documents() -> list[dict]:
     return store.list_documents()
 
 
+def _with_display_numbers(documents: list[dict]) -> list[dict]:
+    """Add stable-for-this-list, gapless numbers without changing database IDs."""
+    total = len(documents)
+    return [
+        {**document, "display_no": total - index}
+        for index, document in enumerate(documents)
+    ]
+
+
+def _resolve_document_number(kb, display_no: int) -> dict | None:
+    """Resolve the number shown by /list to a document with its real ID."""
+    documents = _with_display_numbers(kb.list_documents())
+    return next(
+        (document for document in documents if document["display_no"] == display_no),
+        None,
+    )
+
+
 def _cmd_help(args: str):
     lines = ["Available commands:", "-" * 40]
     for cmd in get_all():
@@ -49,13 +69,106 @@ def _cmd_help(args: str):
         _chat(line)
 
 
-def _cmd_ingest(args: str):
+def _scan_directory(directory: Path, recursive: bool) -> tuple[list[Path], int]:
+    """Return supported files and the number of unsupported files."""
+    candidates = directory.rglob("*") if recursive else directory.iterdir()
+    files = sorted(
+        (path for path in candidates if path.is_file()),
+        key=lambda path: str(path).casefold(),
+    )
+    supported = [path for path in files if is_supported(path)]
+    return supported, len(files) - len(supported)
+
+
+def _batch_ingest_files(files: list[Path]):
+    """Create tasks and import files sequentially in one background worker."""
     from core.config import load_config
     from core.kb_manager import KBManager
     from core.task_queue import TaskQueue
+    from workers.ingest_worker import ingest_file
 
-    cfg = load_config()
-    kb = KBManager(cfg)
+    try:
+        cfg = load_config()
+        kb = KBManager(cfg)
+        queue = TaskQueue(kb.sqlite)
+        jobs = []
+        for path in files:
+            source = str(path)
+            task_id = queue.enqueue(source)
+            jobs.append((task_id, source))
+            emit("task.add", task_id=task_id, source=source)
+
+        emit("chat.append", text=f"Queued {len(jobs)} files for sequential import.")
+        completed = 0
+        for task_id, source in jobs:
+            if ingest_file(task_id, cfg, kb, source) is not None:
+                completed += 1
+        emit(
+            "chat.append",
+            text=f"Batch finished: {completed} succeeded, {len(jobs) - completed} failed.",
+        )
+    except Exception as exc:
+        emit("chat.append", text=f"Batch import failed: {exc}")
+
+
+def _start_batch_import(files: list[Path], ignored: int, recursive: bool):
+    if not files:
+        scope = "directory tree" if recursive else "directory"
+        _chat(f"No supported files found in the {scope}. Ignored {ignored} files.")
+        return
+
+    scope = "recursively" if recursive else "from this directory"
+    _chat(f"Starting batch import: {len(files)} files {scope}; ignored {ignored} files.")
+    threading.Thread(target=_batch_ingest_files, args=(files,), daemon=True).start()
+
+
+def _open_directory_selection(
+    directory: Path,
+    files: list[Path],
+    ignored: int,
+    recursive: bool,
+):
+    """Ask the UI to select documents before starting a batch import."""
+    if not files:
+        scope = "directory tree" if recursive else "directory"
+        _chat(f"No supported files found in the {scope}. Ignored {ignored} files.")
+        return
+
+    emit(
+        "directory.select",
+        root=directory,
+        files=files,
+        recursive=recursive,
+        on_confirm=lambda selected: _start_batch_import(selected, ignored, recursive),
+        on_cancel=lambda: _chat("Directory import cancelled."),
+    )
+
+
+def _prompt_directory_import(directory: Path):
+    direct_files, direct_ignored = _scan_directory(directory, recursive=False)
+    recursive_files, recursive_ignored = _scan_directory(directory, recursive=True)
+
+    if not recursive_files:
+        _chat(f"No supported files found under '{directory}'. Ignored {recursive_ignored} files.")
+        return
+
+    question = (
+        f"Directory found: {len(direct_files)} supported files here, "
+        f"{len(recursive_files)} including subdirectories "
+        f"({recursive_ignored} ignored). Import recursively? [y/N]"
+    )
+    request_confirmation(
+        question,
+        on_yes=lambda: _open_directory_selection(
+            directory, recursive_files, recursive_ignored, True
+        ),
+        on_no=lambda: _open_directory_selection(
+            directory, direct_files, direct_ignored, False
+        ),
+    )
+
+
+def _cmd_ingest(args: str):
     source = args.strip().strip('"')
     if not source:
         _chat("Usage: /ingest <file|url>")
@@ -67,6 +180,19 @@ def _cmd_ingest(args: str):
         if not path.exists():
             _chat(f"'{source}' not found.")
             return
+        if path.is_dir():
+            _prompt_directory_import(path.resolve())
+            return
+        if not is_supported(path):
+            _chat(f"Unsupported format: {path.suffix or '(no extension)'}")
+            return
+
+    from core.config import load_config
+    from core.kb_manager import KBManager
+    from core.task_queue import TaskQueue
+
+    cfg = load_config()
+    kb = KBManager(cfg)
 
     task_id = TaskQueue(kb.sqlite).enqueue(source)
     emit("task.add", task_id=task_id, source=source)
@@ -83,14 +209,14 @@ def _cmd_ingest(args: str):
 
 
 def _cmd_list(args: str):
-    docs = _load_documents()
+    docs = _with_display_numbers(_load_documents())
     _chat("Documents:")
-    _chat(f"  {'ID':>4}  {'Title':<44}  Type")
+    _chat(f"  {'No.':>4}  {'Title':<44}  Type")
     _chat(f"  {'-' * 4}  {'-' * 44}  {'-' * 10}")
     if docs:
         for doc in docs:
             title = _fit_display_width(doc["title"], 44)
-            _chat(f"  {doc['id']:>4}  {title}  {doc['type']}")
+            _chat(f"  {doc['display_no']:>4}  {title}  {doc['type']}")
     else:
         _chat("  No documents.")
     _chat("")
@@ -157,18 +283,18 @@ def _cmd_rm(args: str):
     from core.kb_manager import KBManager
 
     try:
-        doc_id = int(args.strip())
+        display_no = int(args.strip())
     except Exception:
-        _chat("Usage: /rm <doc_id>")
+        _chat("Usage: /rm <document_no>")
         return
 
     kb = KBManager(load_config())
-    doc = kb.get_document(doc_id)
+    doc = _resolve_document_number(kb, display_no)
     if not doc:
-        _chat(f"#{doc_id} not found.")
+        _chat(f"Document No. {display_no} not found. Run /list to see current numbers.")
         return
-    kb.delete_document(doc_id)
-    _chat(f"Deleted #{doc_id}")
+    kb.delete_document(doc["id"])
+    _chat(f"Deleted document No. {display_no}: {doc['title']}")
 
 
 def _cmd_status(args: str):
@@ -199,14 +325,15 @@ def _cmd_info(args: str):
     from core.kb_manager import KBManager
 
     try:
-        doc_id = int(args.strip())
+        display_no = int(args.strip())
     except Exception:
-        _chat("Usage: /info <doc_id>")
+        _chat("Usage: /info <document_no>")
         return
 
-    doc = KBManager(load_config()).get_document(doc_id)
+    kb = KBManager(load_config())
+    doc = _resolve_document_number(kb, display_no)
     if not doc:
-        _chat(f"#{doc_id} not found.")
+        _chat(f"Document No. {display_no} not found. Run /list to see current numbers.")
         return
 
     _chat(f"  Title: {doc['title']}")
@@ -219,8 +346,8 @@ register(Command(name="setup", help="Download embedding model", handler=_cmd_set
 register(Command(name="ingest", help="Import file/URL into KB", handler=_cmd_ingest, aliases=["i"], priority=10))
 register(Command(name="search", help="Semantic search", handler=_cmd_search, aliases=["s"], priority=11))
 register(Command(name="list", help="List documents", handler=_cmd_list, aliases=["ls"], priority=20))
-register(Command(name="info", help="Document details", handler=_cmd_info, priority=21))
+register(Command(name="info", help="Document details by list number", handler=_cmd_info, priority=21))
 register(Command(name="tags", help="Tag tree", handler=_cmd_tags, priority=22))
-register(Command(name="rm", help="Delete document", handler=_cmd_rm, aliases=["delete"], priority=23))
+register(Command(name="rm", help="Delete document by list number", handler=_cmd_rm, aliases=["delete"], priority=23))
 register(Command(name="status", help="Task queue", handler=_cmd_status, aliases=["st"], priority=30))
 register(Command(name="config", help="Show config", handler=_cmd_config, aliases=["cfg"], priority=40))

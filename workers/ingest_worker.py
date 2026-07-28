@@ -29,9 +29,11 @@ def ingest_file(task_id: int, config, kb, source: str):
         )
         tq.mark_completed(task_id, doc_id)
         emit("task.done", task_id=task_id, doc_id=doc_id, source=source)
+        return doc_id
     except Exception as e:
         tq.mark_failed(task_id, str(e))
         emit("task.failed", task_id=task_id, error=str(e))
+        return None
 
 
 def ingest_url(task_id: int, config, source: str):

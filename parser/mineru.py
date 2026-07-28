@@ -1,11 +1,7 @@
 from pathlib import Path
 from llama_index.readers.mineru import MinerUReader
+from parser.formats import HTML_FORMATS, MINERU_FORMATS, TEXT_FORMATS
 from parser.text import parse_text_file
-
-MINERU_FORMATS = {".pdf", ".docx", ".pptx", ".xls", ".xlsx",
-                  ".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp"}
-TEXT_FORMATS = {".txt", ".md", ".markdown", ".rst", ".csv"}
-HTML_FORMATS = {".html", ".htm"}
 
 _reader: MinerUReader | None = None
 _precision_reader: MinerUReader | None = None
@@ -26,11 +22,6 @@ def _get_precision_reader() -> MinerUReader:
         cfg = load_config()
         _precision_reader = MinerUReader(mode="precision", token=cfg.mineru_token)
     return _precision_reader
-
-
-def is_supported(path: Path) -> bool:
-    ext = path.suffix.lower()
-    return ext in MINERU_FORMATS or ext in TEXT_FORMATS or ext in HTML_FORMATS
 
 
 def parse_file(path: Path) -> tuple[str, str]:

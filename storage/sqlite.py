@@ -92,7 +92,7 @@ class SQLiteStore:
             """, (tag, f"{tag}/%")).fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM documents ORDER BY created_at DESC"
+                "SELECT * FROM documents ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [dict(r) for r in rows]
 

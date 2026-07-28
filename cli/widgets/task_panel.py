@@ -14,7 +14,11 @@ class TaskPanel:
         self.tasks = []
         self._lock = threading.Lock()
         self.control = FormattedTextControl(text=self._render)
-        self.window = Window(content=self.control, height=5, wrap_lines=False)
+        self.window = Window(
+            content=self.control,
+            height=self.visible_line_count,
+            wrap_lines=False,
+        )
 
     def add(self, task_id: int, source: str):
         with self._lock:
@@ -38,17 +42,35 @@ class TaskPanel:
                         t["done_time"] = time.time()
                     break
 
-    def _render(self) -> str:
+    def _visible_tasks(self) -> list[dict]:
         with self._lock:
             now = time.time()
-            active = [t for t in self.tasks if t["status"] in ("queued", "running")][:2]
-            done = [t for t in self.tasks if t["status"] == "done" and now - t.get("done_time", 0) < 5][:1]
+            active = [
+                task.copy()
+                for task in self.tasks
+                if task["status"] in ("queued", "running")
+            ][:3]
+            done = [
+                task.copy()
+                for task in self.tasks
+                if task["status"] == "done" and now - task.get("done_time", 0) < 5
+            ][: max(0, 3 - len(active))]
+        return active + done
 
-        if not active and not done:
-            return "  No active tasks"
+    def visible_line_count(self) -> int:
+        return max(1, len(self._visible_tasks()))
+
+    def has_visible_tasks(self) -> bool:
+        return bool(self._visible_tasks())
+
+    def _render(self) -> str:
+        visible = self._visible_tasks()
+
+        if not visible:
+            return ""
 
         lines = []
-        for t in active + done:
+        for t in visible:
             tag = "#" + str(t["id"])
             src = t["source"][:40]
             status = t["status"]

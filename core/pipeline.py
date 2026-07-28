@@ -5,7 +5,8 @@ from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 
 from ai.embedding import get_embedder
-from parser.mineru import is_supported, parse_file
+from parser.formats import is_supported
+from parser.mineru import parse_file, parse_url
 from storage.files import compute_hash
 
 
