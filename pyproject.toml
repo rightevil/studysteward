@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studysteward"
-version = "0.2.0"
-description = "Personal learning knowledge base CLI tool"
+version = "0.3.0"
+description = "Local-first RAG and agentic research CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -27,7 +27,7 @@ dependencies = [
 study = "cli.repl:main"
 
 [tool.setuptools.packages.find]
-include = ["cli*", "core*", "ai*", "parser*", "storage*", "workers*"]
+include = ["cli*", "core*", "ai*", "parser*", "storage*", "workers*", "research*"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

@@ -3,6 +3,7 @@ Command handlers - all /commands register here.
 Imported at startup to register with the command registry.
 """
 import io
+import json
 import sys
 import threading
 from pathlib import Path
@@ -236,6 +237,133 @@ def _cmd_search(args: str):
         _chat(f"  {idx}. {result.get('doc_title', '?')} ({1 - result.get('distance', 0):.2f})")
 
 
+def _run_research(goal: str):
+    from ai.provider import create_provider_from_env
+    from core.config import load_config
+    from core.kb_manager import KBManager
+    from research.agent import ResearchAgent
+    from research.model import ProviderResearchModel
+    from research.tools import ResearchTools
+
+    progress: list[str] = []
+    kb = None
+    try:
+        config = load_config()
+        kb = KBManager(config)
+        provider = create_provider_from_env(
+            {
+                "provider": config.ai_provider,
+                "api_key": config.ai_api_key,
+                "model": config.ai_model,
+                "base_url": config.ai_base_url,
+            }
+        )
+
+        def show_progress(message: str):
+            progress.append(message)
+            emit("chat.stream", text="\n".join(progress[-8:]))
+
+        agent = ResearchAgent(
+            ProviderResearchModel(provider),
+            ResearchTools(kb),
+            trace_store=kb.sqlite,
+            max_steps=8,
+        )
+        result = agent.run(goal, on_event=show_progress)
+        footer = (
+            f"\n\nResearch run #{result.run_id} | "
+            f"{len(result.steps)} steps | {result.status}"
+        )
+        emit("chat.commit", text=result.report + footer)
+    except Exception as exc:
+        emit("chat.commit", text=f"Research failed: {exc}")
+    finally:
+        if kb is not None:
+            kb.sqlite.close()
+        emit("agent.status", state="idle")
+
+
+def _cmd_research(args: str):
+    goal = args.strip()
+    if not goal:
+        _chat("Usage: /research <goal>")
+        return
+    emit("agent.status", state="researching")
+    emit("chat.stream", text="_Planning research..._")
+    threading.Thread(target=_run_research, args=(goal,), daemon=True).start()
+
+
+def _cmd_trace(args: str):
+    from core.config import load_config
+    from storage.sqlite import SQLiteStore
+
+    raw_id = args.strip()
+    if raw_id:
+        try:
+            run_id = int(raw_id)
+        except ValueError:
+            _chat("Usage: /trace [research_run_id]")
+            return
+    else:
+        run_id = None
+
+    config = load_config()
+    store = SQLiteStore(config.data_dir / "kb.db")
+    store.init_schema()
+    run = store.get_research_run(run_id)
+    if not run:
+        store.close()
+        _chat("No research run found.")
+        return
+    steps = store.get_research_steps(run["id"])
+    store.close()
+    _chat(f"Research run #{run['id']}: {run['goal']}")
+    _chat(f"Status: {run['status']}")
+    for step in steps:
+        arguments = json.loads(step["args_json"])
+        observation = step["observation"].replace("\n", " ")
+        if len(observation) > 240:
+            observation = observation[:237] + "..."
+        _chat(
+            f"  {step['step_no']}. {step['tool']} "
+            f"{json.dumps(arguments, ensure_ascii=False)} "
+            f"({step['duration_ms']} ms)"
+        )
+        _chat(f"     {observation}")
+    _chat("")
+
+
+def _run_reindex():
+    from core.config import load_config
+    from core.kb_manager import KBManager
+
+    kb = None
+    try:
+        kb = KBManager(load_config())
+        result = kb.repair_legacy_index()
+        emit(
+            "chat.commit",
+            text=(
+                "Index repair completed.\n"
+                f"  Vectors scanned: {result['scanned']}\n"
+                f"  Vectors mapped: {result['mapped']}\n"
+                f"  Metadata repaired: {result['repaired']}\n"
+                f"  Documents mapped: {result['documents']}\n"
+                f"  Unmatched vectors: {result['unmatched']}"
+            ),
+        )
+    except Exception as exc:
+        emit("chat.commit", text=f"Index repair failed: {exc}")
+    finally:
+        if kb is not None:
+            kb.sqlite.close()
+
+
+def _cmd_reindex(args: str):
+    emit("chat.stream", text="_Repairing legacy index metadata..._")
+    threading.Thread(target=_run_reindex, daemon=True).start()
+
+
 def _cmd_tags(args: str):
     from core.config import load_config
     from core.kb_manager import KBManager
@@ -324,18 +452,30 @@ def _cmd_info(args: str):
     from core.config import load_config
     from core.kb_manager import KBManager
 
+    raw_number = args.strip()
     try:
-        display_no = int(args.strip())
-    except Exception:
-        _chat("Usage: /info <document_no>")
+        if raw_number.lower().startswith("d"):
+            stable_id = int(raw_number[1:])
+            display_no = None
+        else:
+            stable_id = None
+            display_no = int(raw_number)
+    except ValueError:
+        _chat("Usage: /info <document_no|D-id>")
         return
 
     kb = KBManager(load_config())
-    doc = _resolve_document_number(kb, display_no)
+    doc = (
+        kb.get_document(stable_id)
+        if stable_id is not None
+        else _resolve_document_number(kb, display_no)
+    )
     if not doc:
-        _chat(f"Document No. {display_no} not found. Run /list to see current numbers.")
+        reference = f"D{stable_id}" if stable_id is not None else f"No. {display_no}"
+        _chat(f"Document {reference} not found. Run /list to see current documents.")
         return
 
+    _chat(f"  Citation: [D{doc['id']}]")
     _chat(f"  Title: {doc['title']}")
     _chat(f"  Type: {doc['type']}")
     _chat(f"  Tags: {', '.join(doc.get('tags', [])) or '(none)'}")
@@ -345,9 +485,12 @@ register(Command(name="help", help="Show commands", handler=_cmd_help, aliases=[
 register(Command(name="setup", help="Download embedding model", handler=_cmd_setup, priority=2))
 register(Command(name="ingest", help="Import file/URL into KB", handler=_cmd_ingest, aliases=["i"], priority=10))
 register(Command(name="search", help="Semantic search", handler=_cmd_search, aliases=["s"], priority=11))
+register(Command(name="research", help="Run bounded research agent", handler=_cmd_research, aliases=["r"], priority=12))
+register(Command(name="trace", help="Show a research execution trace", handler=_cmd_trace, priority=13))
 register(Command(name="list", help="List documents", handler=_cmd_list, aliases=["ls"], priority=20))
-register(Command(name="info", help="Document details by list number", handler=_cmd_info, priority=21))
+register(Command(name="info", help="Document details by No. or D-id", handler=_cmd_info, priority=21))
 register(Command(name="tags", help="Tag tree", handler=_cmd_tags, priority=22))
 register(Command(name="rm", help="Delete document by list number", handler=_cmd_rm, aliases=["delete"], priority=23))
 register(Command(name="status", help="Task queue", handler=_cmd_status, aliases=["st"], priority=30))
+register(Command(name="reindex", help="Repair legacy vector mappings", handler=_cmd_reindex, priority=31))
 register(Command(name="config", help="Show config", handler=_cmd_config, aliases=["cfg"], priority=40))

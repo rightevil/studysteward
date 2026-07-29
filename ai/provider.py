@@ -204,6 +204,21 @@ class AIProvider(AIBackend):
             return self._call_anthropic(prompt, max_tokens, stream)
         return self._call_openai(prompt, max_tokens, stream)
 
+    def complete(self, prompt: str, max_tokens: int = 2048) -> str:
+        """Return one non-streaming model response for agent workflows."""
+        return self._call(prompt, max_tokens=max_tokens, stream=False)
+
+    def complete_json(self, prompt: str, max_tokens: int = 1024) -> dict:
+        """Return a JSON object, tolerating fenced model output."""
+        response = self.complete(prompt, max_tokens=max_tokens).strip()
+        if response.startswith("```"):
+            response = response.split("\n", 1)[-1]
+            response = response.rsplit("```", 1)[0].strip()
+        start, end = response.find("{"), response.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("Model did not return a JSON object")
+        return json.loads(response[start : end + 1])
+
     def summarize(self, text: str) -> Summary:
         response = self._call(SUMMARIZE_PROMPT.format(text=text[:8000]))
         data = json.loads(response)

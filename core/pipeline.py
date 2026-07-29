@@ -22,6 +22,39 @@ def _make_pipeline(chunk_size: int, chunk_overlap: int) -> IngestionPipeline:
     )
 
 
+def _index_document(kb, config, text: str, metadata: dict, document_fields: dict) -> int:
+    """Persist one document and keep SQLite and Chroma mappings consistent."""
+    doc_id = kb.sqlite.add_document(**document_fields)
+    nodes = []
+    try:
+        doc = Document(text=text, metadata={**metadata, "kb_doc_id": doc_id})
+        nodes = _make_pipeline(config.chunk_size, config.chunk_overlap).run(
+            documents=[doc]
+        )
+        for index, node in enumerate(nodes):
+            node.metadata.update(
+                {
+                    **metadata,
+                    "kb_doc_id": doc_id,
+                    "chunk_index": index,
+                }
+            )
+        kb.index.insert_nodes(nodes)
+        kb.sqlite.add_chunks(
+            doc_id,
+            [
+                (node.get_content(), index, node.node_id)
+                for index, node in enumerate(nodes)
+            ],
+        )
+        return doc_id
+    except Exception:
+        if nodes:
+            kb.vector_store.delete_nodes([node.node_id for node in nodes])
+        kb.sqlite.delete_document(doc_id)
+        raise
+
+
 def run_ingest(kb_manager, config, source: str, auto_summarize: bool = True, on_progress=None) -> int:
     """Run the document ingest pipeline and return the resulting document ID."""
     is_url = source.startswith(("http://", "https://"))
@@ -86,26 +119,25 @@ def run_ingest(kb_manager, config, source: str, auto_summarize: bool = True, on_
     # Stage 3: Chunk + embed
     if on_progress:
         on_progress("embedding")
-    doc = Document(text=text, metadata={"title": title, "source": source})
-    pipeline = _make_pipeline(config.chunk_size, config.chunk_overlap)
-    nodes = pipeline.run(documents=[doc])
-
     # Stage 4: Index + metadata
     if on_progress:
         on_progress("indexing")
-    kb.index.insert_nodes(nodes)
-
+    doc_id = _index_document(
+        kb,
+        config,
+        text,
+        {"title": title, "source": source, "doc_type": doc_type},
+        {
+            "title": title,
+            "source_path": source,
+            "source_url": source if is_url else None,
+            "doc_type": doc_type,
+            "summary": summary,
+            "file_hash": file_hash,
+        },
+    )
     if not is_url:
         kb.files.store(source_path)
-
-    doc_id = kb.sqlite.add_document(
-        title=title,
-        source_path=source,
-        source_url=source if is_url else None,
-        doc_type=doc_type,
-        summary=summary,
-        file_hash=file_hash,
-    )
     if tags:
         kb.sqlite.set_document_tags(doc_id, tags)
 
@@ -163,21 +195,21 @@ def ingest_text(kb, config, source: str, text: str, doc_type: str, auto_summariz
 
     if on_progress:
         on_progress("embedding")
-    doc = Document(text=text, metadata={"title": title, "source": source})
-    pipeline = _make_pipeline(config.chunk_size, config.chunk_overlap)
-    nodes = pipeline.run(documents=[doc])
-
     if on_progress:
         on_progress("indexing")
-    kb.index.insert_nodes(nodes)
-
-    doc_id = kb.sqlite.add_document(
-        title=title,
-        source_path=str(raw_path),
-        source_url=source if source.startswith("http") else None,
-        doc_type=doc_type,
-        summary=summary,
-        file_hash=file_hash,
+    doc_id = _index_document(
+        kb,
+        config,
+        text,
+        {"title": title, "source": source, "doc_type": doc_type},
+        {
+            "title": title,
+            "source_path": str(raw_path),
+            "source_url": source if source.startswith("http") else None,
+            "doc_type": doc_type,
+            "summary": summary,
+            "file_hash": file_hash,
+        },
     )
     if tags:
         kb.sqlite.set_document_tags(doc_id, tags)

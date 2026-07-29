@@ -43,6 +43,26 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS research_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    final_report TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS research_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    step_no INTEGER NOT NULL,
+    thought TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    observation TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(file_hash);
 CREATE INDEX IF NOT EXISTS idx_document_tags_doc ON document_tags(doc_id);
@@ -166,6 +186,13 @@ class SQLiteStore:
         self.conn.commit()
         return c.lastrowid
 
+    def add_chunks(self, doc_id: int, chunks: list[tuple[str, int, str]]):
+        self.conn.executemany(
+            "INSERT INTO chunks (doc_id, content, chunk_index, embedding_id) VALUES (?,?,?,?)",
+            ((doc_id, content, index, embedding_id) for content, index, embedding_id in chunks),
+        )
+        self.conn.commit()
+
     def get_chunks(self, doc_id: int) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM chunks WHERE doc_id=? ORDER BY chunk_index", (doc_id,)
@@ -181,6 +208,63 @@ class SQLiteStore:
             "SELECT 1 FROM documents WHERE file_hash=?", (file_hash,)
         ).fetchone()
         return row is not None
+
+    def create_research_run(self, goal: str) -> int:
+        cursor = self.conn.execute(
+            "INSERT INTO research_runs (goal) VALUES (?)",
+            (goal,),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def add_research_step(
+        self,
+        run_id: int,
+        step_no: int,
+        thought: str,
+        tool: str,
+        args_json: str,
+        observation: str,
+        duration_ms: int,
+    ):
+        self.conn.execute(
+            """
+            INSERT INTO research_steps
+                (run_id, step_no, thought, tool, args_json, observation, duration_ms)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (run_id, step_no, thought, tool, args_json, observation, duration_ms),
+        )
+        self.conn.commit()
+
+    def finish_research_run(self, run_id: int, status: str, report: str):
+        self.conn.execute(
+            """
+            UPDATE research_runs
+            SET status=?, final_report=?, completed_at=datetime('now')
+            WHERE id=?
+            """,
+            (status, report, run_id),
+        )
+        self.conn.commit()
+
+    def get_research_run(self, run_id: int | None = None) -> dict | None:
+        if run_id is None:
+            row = self.conn.execute(
+                "SELECT * FROM research_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM research_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_research_steps(self, run_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM research_steps WHERE run_id=? ORDER BY step_no",
+            (run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def close(self):
         if self._conn:
