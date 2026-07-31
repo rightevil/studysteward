@@ -47,6 +47,7 @@ def _index_document(kb, config, text: str, metadata: dict, document_fields: dict
                 for index, node in enumerate(nodes)
             ],
         )
+        kb.invalidate_retrieval_cache()
         return doc_id
     except Exception:
         if nodes:

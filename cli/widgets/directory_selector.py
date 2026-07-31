@@ -62,7 +62,8 @@ class DirectorySelector:
         self._on_cancel = None
 
     def _entries(self) -> list[_Entry]:
-        entries = [_Entry("all", f"Select all ({len(self.files)} files)")]
+        scope_files = self._current_scope_files()
+        entries = [_Entry("all", f"Select all ({len(scope_files)} files)")]
         if self.recursive:
             directories = set()
             for path in self.files:
@@ -84,6 +85,14 @@ class DirectorySelector:
         )
         return entries
 
+    def _current_scope_files(self) -> set[Path]:
+        """Return scanned files in the current directory tree."""
+        return {
+            path
+            for path in self.files
+            if path.parent == self.current_dir or self.current_dir in path.parents
+        }
+
     def move(self, delta: int):
         entries = self._entries()
         self.cursor = max(0, min(self.cursor + delta, len(entries) - 1))
@@ -92,10 +101,11 @@ class DirectorySelector:
     def toggle(self):
         entry = self._entries()[self.cursor]
         if entry.kind == "all":
-            if len(self.selected) == len(self.files):
-                self.selected.clear()
+            scope_files = self._current_scope_files()
+            if scope_files.issubset(self.selected):
+                self.selected.difference_update(scope_files)
             else:
-                self.selected = set(self.files)
+                self.selected.update(scope_files)
         elif entry.kind == "file" and entry.path is not None:
             if entry.path in self.selected:
                 self.selected.remove(entry.path)
@@ -140,9 +150,11 @@ class DirectorySelector:
         if entry.kind == "directory":
             return "DIR"
         if entry.kind == "all":
-            if not self.selected:
+            scope_files = self._current_scope_files()
+            selected_count = len(scope_files & self.selected)
+            if not selected_count:
                 return " "
-            return "x" if len(self.selected) == len(self.files) else "-"
+            return "x" if selected_count == len(scope_files) else "-"
         return "x" if entry.path in self.selected else " "
 
     def _render(self) -> str:

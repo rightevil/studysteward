@@ -121,7 +121,9 @@ def _print_transcript(app: Application, messages: list[tuple[str, str]]):
             padding = " " * max(0, width - get_cwidth(line))
             fragments.append(("class:user-input", line + padding + "\n"))
         else:
-            fragments.extend(to_formatted_text(chat_panel.format_messages(text + "\n")))
+            fragments.extend(
+                to_formatted_text(chat_panel.format_messages(text + "\n", width=width))
+            )
     formatted = FormattedText(fragments)
     run_in_terminal(lambda: app.print_text(formatted))
 

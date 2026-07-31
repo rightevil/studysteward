@@ -27,7 +27,7 @@ dependencies = [
 study = "cli.repl:main"
 
 [tool.setuptools.packages.find]
-include = ["cli*", "core*", "ai*", "parser*", "storage*", "workers*", "research*"]
+include = ["cli*", "core*", "ai*", "parser*", "storage*", "workers*", "research*", "evaluation*"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

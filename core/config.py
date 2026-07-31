@@ -12,6 +12,7 @@ class Config:
     data_dir: Path = Path.home() / ".studysteward"
     chunk_size: int = 500
     chunk_overlap: int = 50
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
 BUNDLED_ENV = Path(__file__).parent.parent / ".env"
 
@@ -47,4 +48,8 @@ def load_config(path: str | Path | None = None) -> Config:
         data_dir=Path(os.path.expanduser(env.get("STUDYSTEWARD_DATA_DIR", "~/.studysteward"))),
         chunk_size=int(env.get("STUDYSTEWARD_CHUNK_SIZE", "500")),
         chunk_overlap=int(env.get("STUDYSTEWARD_CHUNK_OVERLAP", "50")),
+        reranker_model=env.get(
+            "STUDYSTEWARD_RERANKER_MODEL",
+            "BAAI/bge-reranker-v2-m3",
+        ),
     )

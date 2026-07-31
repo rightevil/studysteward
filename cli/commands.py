@@ -384,22 +384,44 @@ def _cmd_tags(args: str):
 
 
 def _cmd_config(args: str):
+    from ai.reranker import is_reranker_installed
     from core.config import load_config
 
     cfg = load_config()
     _chat(f"  AI: {cfg.ai_provider}/{cfg.ai_model or 'default'}")
     _chat(f"  MinerU: {'configured' if cfg.mineru_token else 'not set'}")
+    status = "installed" if is_reranker_installed(cfg.reranker_model) else "not installed"
+    _chat(f"  Reranker: {cfg.reranker_model} ({status})")
 
 
 def _cmd_setup(args: str):
-    _chat("Downloading BAAI/bge-small-zh...")
+    from core.config import load_config
+
+    target = args.strip().casefold() or "embedding"
+    if target not in {"embedding", "reranker", "all"}:
+        _chat("Usage: /setup [embedding|reranker|all]")
+        return
+
+    models = []
+    if target in {"embedding", "all"}:
+        models.append(("BAAI/bge-small-zh", "embedding"))
+    if target in {"reranker", "all"}:
+        models.append((load_config().reranker_model, "reranker"))
+
     old_stderr, old_stdout = sys.stderr, sys.stdout
     sys.stderr = io.StringIO()
     sys.stdout = io.StringIO()
     try:
-        from ai.embedding import get_embedder
+        for model_name, model_type in models:
+            _chat(f"Downloading {model_name}...")
+            if model_type == "embedding":
+                from ai.embedding import get_embedder
 
-        get_embedder(local_files_only=False)
+                get_embedder(local_files_only=False)
+            else:
+                from ai.reranker import get_reranker
+
+                get_reranker(model_name, local_files_only=False)
     finally:
         sys.stderr = old_stderr
         sys.stdout = old_stdout
@@ -482,7 +504,7 @@ def _cmd_info(args: str):
 
 
 register(Command(name="help", help="Show commands", handler=_cmd_help, aliases=["h"], priority=1))
-register(Command(name="setup", help="Download embedding model", handler=_cmd_setup, priority=2))
+register(Command(name="setup", help="Download embedding/reranker model", handler=_cmd_setup, priority=2))
 register(Command(name="ingest", help="Import file/URL into KB", handler=_cmd_ingest, aliases=["i"], priority=10))
 register(Command(name="search", help="Semantic search", handler=_cmd_search, aliases=["s"], priority=11))
 register(Command(name="research", help="Run bounded research agent", handler=_cmd_research, aliases=["r"], priority=12))

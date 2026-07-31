@@ -6,6 +6,7 @@ import threading
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout import Window
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.utils import get_cwidth
 
 
 class _ChatWindow(Window):
@@ -125,15 +126,121 @@ class ChatPanel:
         t = re.sub(r"`([^`]+)`", r"<i>\1</i>", t)
         return t
 
-    def _render(self):
-        with self._lock:
-            html_lines = [self._format_line(line) for line in self.lines]
-        return HTML("\n".join(html_lines))
+    @staticmethod
+    def _fit_cell(value: str, width: int) -> str:
+        value = re.sub(r"[*_`]", "", value.strip())
+        result = []
+        used = 0
+        for char in value:
+            char_width = max(0, get_cwidth(char))
+            if used + char_width > width:
+                break
+            result.append(char)
+            used += char_width
+        if used < get_cwidth(value) and width > 1:
+            while result and used + 1 > width:
+                used -= max(0, get_cwidth(result.pop()))
+            result.append("…")
+            used += 1
+        return "".join(result) + " " * max(0, width - used)
 
     @classmethod
-    def format_messages(cls, text: str) -> HTML:
+    def _render_table(cls, rows: list[list[str]], width: int) -> list[str]:
+        column_count = max(len(row) for row in rows)
+        normalized = [row + [""] * (column_count - len(row)) for row in rows]
+        natural = [
+            max(get_cwidth(re.sub(r"[*_`]", "", row[index].strip())) for row in normalized)
+            for index in range(column_count)
+        ]
+        separators = 3 * (column_count - 1)
+        available = max(column_count * 6, width - 4 - separators)
+        if sum(natural) <= available:
+            widths = natural
+        else:
+            per_column = max(6, available // column_count)
+            widths = [min(size, per_column) for size in natural]
+
+        rendered = []
+        for row_index, row in enumerate(normalized):
+            rendered.append(
+                "  "
+                + " │ ".join(
+                    cls._fit_cell(cell, widths[index])
+                    for index, cell in enumerate(row)
+                ).rstrip()
+            )
+            if row_index == 0:
+                rendered.append(
+                    "  " + "─┼─".join("─" * column_width for column_width in widths)
+                )
+        return rendered
+
+    @classmethod
+    def _prepare_markdown(cls, text: str, width: int) -> str:
+        lines = text.split("\n")
+        output = []
+        index = 0
+        in_code = False
+        while index < len(lines):
+            line = lines[index]
+            if line.strip().startswith("```"):
+                in_code = not in_code
+                index += 1
+                continue
+            if in_code:
+                output.append(f"    {line}")
+                index += 1
+                continue
+
+            if (
+                line.strip().startswith("|")
+                and index + 1 < len(lines)
+                and re.match(r"^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$", lines[index + 1])
+            ):
+                table_rows = []
+                table_index = index
+                while (
+                    table_index < len(lines)
+                    and lines[table_index].strip().startswith("|")
+                ):
+                    if table_index != index + 1:
+                        table_rows.append(
+                            [
+                                cell.strip()
+                                for cell in lines[table_index]
+                                .strip()
+                                .strip("|")
+                                .split("|")
+                            ]
+                        )
+                    table_index += 1
+                output.extend(cls._render_table(table_rows, width))
+                index = table_index
+                continue
+
+            if re.match(r"^\s*-\s+", line):
+                line = re.sub(r"^\s*-\s+", "  • ", line)
+            elif re.match(r"^\s*\d+\.\s+", line):
+                line = "  " + line.lstrip()
+            elif line.startswith("> "):
+                line = "  │ " + line[2:]
+            elif re.match(r"^\s*---+\s*$", line):
+                line = "─" * min(max(20, width - 4), 100)
+            output.append(line)
+            index += 1
+        return "\n".join(output)
+
+    def _render(self):
+        with self._lock:
+            text = "\n".join(self.lines)
+        prepared = self._prepare_markdown(text, 120)
+        return HTML("\n".join(self._format_line(line) for line in prepared.split("\n")))
+
+    @classmethod
+    def format_messages(cls, text: str, width: int = 120) -> HTML:
         """Format completed transcript text for terminal output."""
-        return HTML("\n".join(cls._format_line(line) for line in text.split("\n")))
+        prepared = cls._prepare_markdown(text, width)
+        return HTML("\n".join(cls._format_line(line) for line in prepared.split("\n")))
 
 
 chat_panel = ChatPanel()

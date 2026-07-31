@@ -19,6 +19,7 @@ class KBManager:
         self._embedder = None
         self._index = None
         self._vector_store = None
+        self._lexical_index = None
 
     @property
     def embedder(self):
@@ -45,6 +46,17 @@ class KBManager:
             )
         return self._index
 
+    @property
+    def lexical_index(self):
+        if self._lexical_index is None:
+            from core.retrieval import BM25Index
+
+            self._lexical_index = BM25Index.from_kb(self)
+        return self._lexical_index
+
+    def invalidate_retrieval_cache(self):
+        self._lexical_index = None
+
     def get_document(self, doc_id: int) -> dict | None:
         doc = self.sqlite.get_document(doc_id)
         if doc:
@@ -67,6 +79,7 @@ class KBManager:
         if embedding_ids:
             self.vector_store.delete_nodes(embedding_ids)
         self.sqlite.delete_document(doc_id)
+        self.invalidate_retrieval_cache()
         if doc.get("file_hash"):
             path = self.files.path_for_hash(doc["file_hash"])
             if path:
@@ -151,6 +164,7 @@ class KBManager:
         for doc_id, chunks in chunks_by_doc.items():
             self.sqlite.delete_chunks(doc_id)
             self.sqlite.add_chunks(doc_id, chunks)
+        self.invalidate_retrieval_cache()
 
         return {
             "scanned": len(payload["ids"]),
